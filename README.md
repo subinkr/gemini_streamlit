@@ -1,5 +1,11 @@
 # Gemini Streamlit
 
+### Dependencies
+
+```
+pip install streamlit langchain langchain_community langchain_google_genai
+```
+
 ### 사용법
 
 -   api_key 변수에 Gemini API key를 입력해주세요.
