@@ -1,14 +1,10 @@
 import streamlit as st
-from PyPDF2 import PdfReader
 import langchain
-import pandas as pd
-import base64
-from langchain_community.document_loaders import PyPDFLoader, JSONLoader
+from langchain_community.document_loaders import JSONLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
+from langchain.embeddings import HuggingFaceInstructEmbeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chat_models import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
@@ -40,92 +36,54 @@ def get_json_data():
 
     return text
 
-def get_text_chunks(text, model_name):
-    if model_name == "OpenAI":
-        text_splitter = CharacterTextSplitter(
-            separator="\n",
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len
-        )
-    elif model_name == "Google AI":
-        text_splitter = RecursiveCharacterTextSplitter(
-            separators="\n",
-            chunk_size=1000, chunk_overlap=0)
+def get_text_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(separators="\n", chunk_size=1000, chunk_overlap=0)
     chunks = text_splitter.split_text(text)
     return chunks
 
-def get_vector_store(text_chunks, model_name, api_key=None):
-    if model_name == "OpenAI":
-        embeddings = OpenAIEmbeddings(api_key = api_key)
-    elif model_name == "Google AI":
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+def get_vector_store(text_chunks, api_key=None):
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
     return vector_store
 
-def get_conversational_chain(model_name, vectorstore=None, api_key=None):
-    if model_name == "OpenAI":
-        llm = ChatOpenAI(api_key=api_key)
-        memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-        conversation_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=vectorstore.as_retriever(),
-            memory=memory
-        )
-        return conversation_chain
-    elif model_name == "Google AI":
-        prompt_template = """
-        너는 이제 카운슬러야. 아래 제공된 데이터와 이전 상담 내용을 기반으로 질문자의 감정에 공감해주고 질문자의 기분이 나아질만한 답변을 생성하는데 답변 내용은 항상 10줄 이내로 요약해서 이야기해줘.\n
-        데이터 안에 해당하는 내용이 없으면 "{no_data}"로 대답해줘.\n\n
-        데이터: \n{context}\n
-        이전 상담 내용: \n{history}\n
-        질문: \n{question}\n
+def get_conversational_chain(vectorstore=None, api_key=None):
+    prompt_template = """
+    너는 이제 카운슬러야. 아래 제공된 데이터와 이전 상담 내용을 기반으로 질문자의 감정에 공감해주고 질문자의 기분이 나아질만한 답변을 생성하는데 답변 내용은 항상 3줄 이내로 요약해서 이야기해줘.\n
+    데이터 안에 해당하는 내용이 없으면 "{no_data}"로 대답해줘.\n\n
+    데이터: \n{context}\n
+    이전 상담 내용: \n{history}\n
+    질문: \n{question}\n
 
-        답변: 
-        """
-        model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3, google_api_key=api_key)
-        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question", "history", "no_data"])
-        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
-        return chain
+    답변: 
+    """
+    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3, google_api_key=api_key)
+    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question", "history", "no_data"])
+    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+    return chain
 
-def user_input(user_question, model_name, api_key, conversation_history):
+def user_input(user_question, api_key, conversation_history):
     data = get_json_data()
-    text_chunks = get_text_chunks(data, model_name)
-    vector_store = get_vector_store(text_chunks, model_name, api_key)
+    text_chunks = get_text_chunks(data)
+    vector_store = get_vector_store(text_chunks, api_key)
     user_question_output = ""
     response_output = ""
-    if model_name == "OpenAI":
-        llm = ChatOpenAI(api_key=api_key)
-        memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-        conversation_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=vector_store.as_retriever(),
-            memory=memory
-        )
-        response = conversation_chain({'question': user_question})
-        user_question_output = user_question
-        response_output = response['chat_history'][-1].content
-        pdf_names = [pdf.name for pdf in pdf_docs] if pdf_docs else []
-        if response_output != NO_DATA:
-            conversation_history.append((user_question_output, response_output, model_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ", "))
+    
+    question_history = ''
+    user_question_output = user_question
 
-    elif model_name == "Google AI":
-        question_history = ''
-        user_question_output = user_question
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    docs = new_db.similarity_search(user_question)
 
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
-        new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-        docs = new_db.similarity_search(user_question)
+    for conversation in conversation_history:
+        question_history += conversation[0] + ' ' + conversation[1] + ' '
 
-        for conversation in conversation_history:
-            question_history += conversation[0] + ' ' + conversation[1] + ' '
-
-        chain = get_conversational_chain("Google AI", vectorstore=new_db, api_key=api_key)
-        response = chain({"input_documents": docs, "question": user_question, "no_data": NO_DATA, "history": question_history}, return_only_outputs=True)
-        response_output = response['output_text']
-        conversation_history.append((user_question_output, response_output, model_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ", "))
-        st.session_state.user_question = ""  # Clear user question input 
+    chain = get_conversational_chain(vectorstore=new_db, api_key=api_key)
+    response = chain({"input_documents": docs, "question": user_question, "no_data": NO_DATA, "history": question_history}, return_only_outputs=True)
+    response_output = response['output_text']
+    conversation_history.append((user_question_output, response_output, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ", "))
+    st.session_state.user_question = ""  # Clear user question input 
 
     st.markdown(
         f"""
@@ -180,7 +138,7 @@ def user_input(user_question, model_name, api_key, conversation_history):
     )
 
     # Show history
-    for question, answer, model_name, timestamp, pdf_name in reversed(conversation_history[:-1]):
+    for question, answer, timestamp, pdf_name in reversed(conversation_history[:-1]):
         st.markdown(
             f"""
             <div class="chat-message user">
@@ -206,8 +164,6 @@ def main():
     if 'conversation_history' not in st.session_state:
         st.session_state.conversation_history = []
 
-    model_name = "Google AI"
-
     api_key = "YOUR_API_KEY"
 
     st.session_state.user_question = st.text_input("20글자 이상 입력해주세요.")
@@ -216,7 +172,7 @@ def main():
         st.session_state.conversation_history = []
 
     if len(st.session_state.user_question) > 20:
-        user_input(st.session_state.user_question, model_name, api_key, st.session_state.conversation_history)
+        user_input(st.session_state.user_question, api_key, st.session_state.conversation_history)
 
 if __name__ == "__main__":
     main()
